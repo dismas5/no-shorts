@@ -88,7 +88,7 @@ test('settings start empty, validate, add with denied access, edit same ID, gran
   let snapshot = await dom.controller.snapshot(); const id = snapshot.config.rules[0]!.id;
   assert.deepEqual(structuredClone(dom.requested), [['http://focus.test/*', 'https://focus.test/*']]);
   assert.ok(dom.window.document.getElementById('rule-list')!.textContent.includes('Нет доступа'));
-  const edit = dom.window.document.querySelector<HTMLButtonElement>('.rule-row button')!;
+  const edit = [...dom.window.document.querySelectorAll<HTMLButtonElement>('.rule-row button')].find(button => button.textContent === 'Изменить')!;
   dom.fire(edit, 'click'); dom.input('rule-name', 'Новое название'); dom.submit(); await settle();
   snapshot = await dom.controller.snapshot(); assert.equal(snapshot.config.rules[0]!.id, id); assert.equal(snapshot.config.rules[0]!.name, 'Новое название');
   dom.allow(); const grantButton = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === 'Запросить доступ')!;
@@ -97,6 +97,49 @@ test('settings start empty, validate, add with denied access, edit same ID, gran
   assert.match(dom.window.document.getElementById('reload-note')!.textContent, /перезагрузите уже открытые вкладки/);
   const remove = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === 'Удалить')!;
   dom.fire(remove, 'click'); await settle(); assert.equal((await dom.controller.snapshot()).config.rules.length, 0);
+});
+test('rule switch pauses, stays disabled after editing and reload, then resumes without another permission request', async () => {
+  const dom = await setup(); dom.allow();
+  dom.input('domain', 'focus.test'); dom.input('rule-name', 'Моё правило'); dom.submit(); await settle();
+  const original = (await dom.controller.snapshot()).config.rules[0]!;
+  const toggle = () => dom.window.document.querySelector<HTMLButtonElement>('[role="switch"]')!;
+  assert.equal(toggle().getAttribute('aria-checked'), 'true');
+  assert.equal(toggle().getAttribute('aria-label'), 'Блокировать по правилу «Моё правило»');
+  dom.fire(toggle(), 'click');
+  assert.equal(toggle().disabled, true);
+  await settle();
+  assert.equal(toggle().getAttribute('aria-checked'), 'false');
+  assert.equal(toggle().disabled, false);
+  assert.deepEqual((await dom.controller.snapshot()).config.rules, [{ ...original, enabled: false }]);
+  assert.match(dom.window.document.getElementById('status')!.textContent, /Все правила выключены/);
+  dom.click('export');
+  assert.equal(JSON.parse((dom.window.document.getElementById('json-preview') as HTMLTextAreaElement).value).rules[0].enabled, false);
+  dom.input('test-url', 'https://focus.test/section'); dom.fire(dom.window.document.getElementById('test-form')!, 'submit');
+  assert.match(dom.window.document.getElementById('test-result')!.textContent, /Совпадений нет/);
+  const edit = [...dom.window.document.querySelectorAll('button')].find(button => button.textContent === 'Изменить')!;
+  dom.fire(edit, 'click'); dom.input('rule-name', 'Переименовано'); dom.submit(); await settle();
+  assert.equal((await dom.controller.snapshot()).config.rules[0]!.enabled, false);
+  assert.equal(dom.requested.length, 1, 'editing a paused rule must not prompt for access');
+  dom.click('refresh'); await settle();
+  assert.equal(toggle().getAttribute('aria-checked'), 'false');
+  dom.fire(toggle(), 'click'); await settle();
+  assert.equal(toggle().getAttribute('aria-checked'), 'true');
+  assert.equal((await dom.controller.snapshot()).status.rules[0]!.network, true);
+  assert.equal(dom.requested.length, 1, 'retained access should allow resuming without prompting');
+});
+test('switch requests missing access only on resume and failed saves keep the previous state', async () => {
+  const dom = await setup(); dom.input('domain', 'focus.test'); dom.submit(); await settle();
+  const toggle = () => dom.window.document.querySelector<HTMLButtonElement>('[role="switch"]')!;
+  dom.mock.fail('storage'); dom.fire(toggle(), 'click'); await settle();
+  assert.equal(toggle().getAttribute('aria-checked'), 'true');
+  assert.equal(toggle().disabled, false);
+  assert.match(dom.window.document.getElementById('notice')!.textContent, /disk/);
+  dom.mock.fail('storage', false); dom.fire(toggle(), 'click'); await settle();
+  assert.equal(dom.requested.length, 1, 'pausing never requests access');
+  dom.fire(toggle(), 'click'); await settle();
+  assert.equal(dom.requested.length, 2);
+  assert.equal(toggle().getAttribute('aria-checked'), 'true');
+  assert.match(dom.window.document.getElementById('notice')!.textContent, /без подтверждённого доступа/);
 });
 test('JSON import is previewed before replacement; invalid import leaves list unchanged; export roundtrips', async () => {
   const dom = await setup();

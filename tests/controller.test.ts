@@ -36,6 +36,52 @@ test('revocation clears derived policies; restart reinitializes from sole storag
   assert.equal(mock.network.length, 0); assert.equal(mock.scripts.length, 0);
   assert.deepEqual(revoked.config, config);
 });
+test('pause removes network and scripts, survives restart, retains access and resumes', async () => {
+  const mock = mockBrowser(); mock.grant(config.rules);
+  const controller = new Controller(mock.api);
+  await controller.save(config, 0);
+  const paused = { ...config, rules: [{ ...row, enabled: false }] };
+  let result = await controller.save(paused, 1);
+  assert.deepEqual(result.config, paused);
+  assert.deepEqual(result.status.rules[0], { id: 'r', permission: true, network: false, script: false });
+  assert.deepEqual(result.status.errors, []);
+  assert.equal(mock.network.length, 0); assert.equal(mock.scripts.length, 0);
+  assert.equal(mock.grants.length, 2);
+  assert.deepEqual(await controller.guardRules('https://focus.test/section'), []);
+  assert.equal(await controller.block({ tab: { id: 7 }, frameId: 0 } as browser.runtime.MessageSender,
+    'https://focus.test/section', 'https://focus.test/section'), false);
+  const restarted = new Controller(mock.api);
+  assert.deepEqual((await restarted.reconcile()).config, paused);
+  assert.equal(mock.network.length, 0); assert.equal(mock.scripts.length, 0);
+  result = await restarted.save(config, 2);
+  assert.deepEqual(result.status.rules[0], { id: 'r', permission: true, network: true, script: true });
+  assert.equal((await restarted.guardRules('https://focus.test/section')).length, 1);
+  await restarted.save({ schemaVersion: 2, rules: [] }, 3);
+  assert.deepEqual(mock.grants, []);
+});
+test('pausing one rule preserves other rules on the same domain and other sites', async () => {
+  const rules = [row, { ...row, id: 'other-path', path: '/other' }, { ...row, id: 'other-site', domain: 'other.test' }];
+  const mock = mockBrowser(); mock.grant(rules);
+  const controller = new Controller(mock.api);
+  await controller.save({ schemaVersion: 2, rules }, 0);
+  const result = await controller.save({ schemaVersion: 2, rules: rules.map(rule => rule.id === 'r' ? { ...rule, enabled: false } : rule) }, 1);
+  assert.deepEqual(result.status.errors, []);
+  assert.equal(result.status.rules[0]!.network, false); assert.equal(result.status.rules[0]!.script, false);
+  assert.ok(result.status.rules.slice(1).every(status => status.network && status.script));
+  assert.equal(mock.network.length, 2);
+  assert.deepEqual((await controller.guardRules('https://focus.test/section')).map(rule => rule.id), ['other-path']);
+});
+test('a failed pause reports retained network rules and can be retried', async () => {
+  const mock = mockBrowser(); mock.grant(config.rules);
+  const controller = new Controller(mock.api); await controller.save(config, 0);
+  mock.fail('network');
+  const result = await controller.save({ ...config, rules: [{ ...row, enabled: false }] }, 1);
+  assert.equal(result.config.rules[0]!.enabled, false);
+  assert.equal(mock.network.length, 1);
+  assert.match(result.status.errors.join(), /Старые сетевые правила могли сохраниться/);
+  mock.fail('network', false); await controller.reconcile();
+  assert.equal(mock.network.length, 0);
+});
 test('apply errors never report full protection, configuration remains retryable; no URL in diagnostics', async () => {
   const mock = mockBrowser(); mock.grant(config.rules); mock.fail('network');
   const controller = new Controller(mock.api); const failed = await controller.save(config, 0);

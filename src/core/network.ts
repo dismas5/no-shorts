@@ -32,6 +32,6 @@ export function compileNetworkRules(rules: readonly Rule[]): NetworkRule[] {
     used.add(id);
     ids.set(rule.id, id);
   }
-  return rules.map(rule => ({ id: ids.get(rule.id)!, priority: 1, action: { type: 'block' },
+  return rules.filter(rule => rule.enabled !== false).map(rule => ({ id: ids.get(rule.id)!, priority: 1, action: { type: 'block' },
     condition: { regexFilter: regexFor(rule), isUrlFilterCaseSensitive: true, resourceTypes: ['main_frame', 'sub_frame'] } }));
 }

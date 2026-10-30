@@ -22,22 +22,34 @@ function button(label: string, action: () => void): HTMLButtonElement {
 function render(): void {
   if (!snapshot) return;
   const { config, status } = snapshot;
+  const enabledCount = config.rules.filter(rule => rule.enabled !== false).length;
+  const disabledCount = config.rules.length - enabledCount;
   const complete = status.rules.filter(rule => rule.permission && rule.network && rule.script).length;
+  const protection = enabledCount ? `${complete} из ${enabledCount} включённых правил: доступ, сетевые правила и скрипты настроены.` : 'Все правила выключены.';
   el('status').textContent = !config.rules.length ? 'Список пуст. Сайты не блокируются.' :
-    `${complete} из ${config.rules.length} правил: доступ, сетевые правила и скрипты настроены.${status.errors.length ? ' Есть ошибки применения.' : ''}`;
+    `${protection}${disabledCount ? ` Выключено: ${disabledCount}.` : ''}${status.errors.length ? ' Есть ошибки применения.' : ''}`;
   el('errors').replaceChildren(...status.errors.map(error => text('li', error)));
   el('private-status').textContent = status.privateAllowed ? 'Приватный режим: расширению разрешена работа. Доступ к сайтам также необходим.' : 'Приватный режим: доступ не подтверждён. Разрешите работу расширения в приватных окнах в настройках браузера.';
   el('extra-grants').textContent = status.extraOrigins.length ? 'Сохранены дополнительные разрешения, которые могут покрывать другие правила. Проверить и сузить их можно в настройках браузера.' : '';
   el('count').textContent = `${config.rules.length} / 100`;
   const rows = config.rules.map(rule => {
-    const row = text('article', '', 'rule-row');
-    row.append(text('h3', ruleLabel(rule)), text('p', `${kinds[rule.kind]} · ${rule.domain}${rule.path ?? ''}${rule.includeSubdomains ? ' · с поддоменами' : ''}`, 'rule-address'));
+    const enabled = rule.enabled !== false;
+    const row = text('article', '', enabled ? 'rule-row' : 'rule-row rule-disabled');
+    const heading = text('div', '', 'rule-heading');
+    const toggle = button('', () => { void toggleRule(rule); });
+    toggle.id = `toggle-${rule.id}`; toggle.className = 'rule-toggle'; toggle.disabled = busy;
+    toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(enabled));
+    toggle.setAttribute('aria-label', `Блокировать по правилу «${ruleLabel(rule)}»`);
+    const track = text('span', '', 'toggle-track'); track.setAttribute('aria-hidden', 'true');
+    toggle.append(track, text('span', enabled ? 'Включено' : 'Выключено'));
+    heading.append(text('h3', ruleLabel(rule)), toggle);
+    row.append(heading, text('p', `${kinds[rule.kind]} · ${rule.domain}${rule.path ?? ''}${rule.includeSubdomains ? ' · с поддоменами' : ''}`, 'rule-address'));
     const state = status.rules.find(state => state.id === rule.id);
-    row.append(text('p', !state?.permission ? 'Нет доступа · правило не активно' :
+    row.append(text('p', !enabled ? 'Выключено · правило сохранено и не применяется' : !state?.permission ? 'Нет доступа · правило не активно' :
       `Сеть: ${state.network ? 'активна' : 'ошибка'} · скрипты: ${state.script ? 'зарегистрированы' : 'не зарегистрированы'}`, 'rule-status'));
     const actions = text('div', '', 'actions');
     actions.append(button('Изменить', () => edit(rule)), button('Удалить', () => { void remove(rule.id); }));
-    if (!state?.permission) actions.append(button('Запросить доступ', () => { void grant(rule); }));
+    if (enabled && !state?.permission) actions.append(button('Запросить доступ', () => { void grant(rule); }));
     row.append(actions); return row;
   });
   if (!rows.length) {
@@ -85,12 +97,14 @@ async function refreshProtection(): Promise<void> {
 }
 function resetEditor(): void {
   editing = undefined; form.reset(); el('editor-title').textContent = 'Добавить правило';
+  el('save-rule').textContent = 'Сохранить и запросить доступ';
   el('cancel-edit').hidden = true; el('form-error').textContent = ''; updatePath();
 }
 function edit(rule: Rule): void {
   editing = rule.id; name.value = rule.name ?? ''; domain.value = rule.domain;
   subdomains.checked = rule.includeSubdomains; kind.value = rule.kind; path.value = rule.path ?? '';
   el('editor-title').textContent = 'Изменить правило'; el('cancel-edit').hidden = false;
+  el('save-rule').textContent = rule.enabled === false ? 'Сохранить правило' : 'Сохранить и запросить доступ';
   el('form-error').textContent = ''; updatePath(); name.focus();
 }
 function updatePath(): void { el('path-field').hidden = kind.value === 'site'; path.required = kind.value !== 'site'; }
@@ -105,8 +119,12 @@ async function perform(task: () => Promise<void>, errorId = 'notice'): Promise<v
   if (busy) return;
   busy = true;
   el<HTMLButtonElement>('save-rule').disabled = true;
+  for (const toggle of document.querySelectorAll<HTMLButtonElement>('.rule-toggle')) toggle.disabled = true;
   try { await task(); } catch (error) { el(errorId).textContent = errorText(error); }
-  finally { busy = false; el<HTMLButtonElement>('save-rule').disabled = false; }
+  finally {
+    busy = false; el<HTMLButtonElement>('save-rule').disabled = false;
+    for (const toggle of document.querySelectorAll<HTMLButtonElement>('.rule-toggle')) toggle.disabled = false;
+  }
 }
 form.addEventListener('submit', event => {
   event.preventDefault();
@@ -118,6 +136,7 @@ form.addEventListener('submit', event => {
   let rule: Rule;
   try {
     rule = normalizeRule({ id: editing ?? crypto.randomUUID(), name: name.value, domain: domain.value,
+      enabled: snapshot.config.rules.find(rule => rule.id === editing)?.enabled ?? true,
       includeSubdomains: subdomains.checked, kind: kind.value, ...(kind.value !== 'site' ? { path: path.value } : {}) });
   } catch (error) { el('form-error').textContent = errorText(error); return; }
   const rules = snapshot.config.rules.filter(row => row.id !== rule.id);
@@ -127,13 +146,27 @@ form.addEventListener('submit', event => {
   try { config = normalizeConfig({ schemaVersion: 2, rules }); }
   catch (error) { el('form-error').textContent = errorText(error); return; }
   // Call permissions.request in the original user gesture, before any asynchronous storage/message work.
-  const permission = browser.permissions.request({ origins: originsFor(rule) }).catch(() => false);
+  const permission = rule.enabled === false ? Promise.resolve(false) : browser.permissions.request({ origins: originsFor(rule) }).catch(() => false);
   void perform(async () => {
     const granted = await permission;
     await saveConfig(config); resetEditor();
-    announce(granted ? 'Правило сохранено. Фактическое состояние показано в списке.' : 'Правило сохранено без подтверждённого доступа. Разрешите этот сайт в браузере и перепроверьте защиту.');
+    announce(rule.enabled === false ? 'Правило сохранено выключенным.' : granted ? 'Правило сохранено. Фактическое состояние показано в списке.' : 'Правило сохранено без подтверждённого доступа. Разрешите этот сайт в браузере и перепроверьте защиту.');
   }, 'form-error');
 });
+async function toggleRule(rule: Rule): Promise<void> {
+  if (busy || !snapshot) return;
+  const enabled = rule.enabled === false;
+  // A new grant must be requested in the click gesture, before messaging the background.
+  const needsPermission = enabled && !snapshot.status.rules.find(state => state.id === rule.id)?.permission;
+  const permission = needsPermission ? browser.permissions.request({ origins: originsFor(rule) }).catch(() => false) : Promise.resolve(true);
+  await perform(async () => {
+    const granted = await permission;
+    await saveConfig({ ...snapshot!.config, rules: snapshot!.config.rules.map(current => current.id === rule.id ? { ...current, enabled } : current) });
+    if (editing === rule.id) el('save-rule').textContent = enabled ? 'Сохранить и запросить доступ' : 'Сохранить правило';
+    announce(!enabled ? 'Правило выключено. Оно осталось в списке.' : granted ? 'Правило включено. Фактическое состояние показано в списке.' : 'Правило включено без подтверждённого доступа. Разрешите этот сайт в браузере и перепроверьте защиту.');
+  });
+  el(`toggle-${rule.id}`).focus();
+}
 async function grant(rule: Rule): Promise<void> {
   if (busy) return;
   const permission = browser.permissions.request({ origins: originsFor(rule) }).catch(() => false);

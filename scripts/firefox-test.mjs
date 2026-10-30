@@ -1,11 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, cp, rm, mkdir } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { startFixtures } from './fixture-server.mjs';
 // Real Firefox + geckodriver integration. Test-only required hosts live in a temporary copy.
-const temp = await mkdtemp(path.join(os.tmpdir(), 'local-blocklist-firefox-'));
+// Snap Firefox and host geckodriver must both see the test extension files.
+await mkdir('build', { recursive: true });
+const temp = await mkdtemp(path.resolve('build', 'firefox-test-'));
 let fixture, driver, session;
 const driverPort = Number(process.env.LB_DRIVER_PORT ?? 4447);
 const endpoint = `http://127.0.0.1:${driverPort}`;
@@ -31,7 +32,9 @@ try {
   const packed = spawnSync(process.env.PYTHON_BIN ?? 'python3', ['-c', 'import sys,zipfile,pathlib; root=pathlib.Path(sys.argv[1]); z=zipfile.ZipFile(sys.argv[2],"w"); [z.write(p,p.relative_to(root)) for p in sorted(root.rglob("*")) if p.is_file()]; z.close()', path.join(temp, 'extension'), archive], { encoding: 'utf8' });
   if (packed.status !== 0) throw new Error(packed.stderr || 'Python 3 is required for test-only XPI');
   let driverFailure;
-  driver = spawn(process.env.GECKODRIVER_BIN ?? 'geckodriver', ['--port', String(driverPort)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  // Current Firefox requires this flag to navigate to the test extension's options.
+  // It applies only to the temporary WebDriver session, never a user's profile.
+  driver = spawn(process.env.GECKODRIVER_BIN ?? 'geckodriver', ['--allow-system-access', '--port', String(driverPort)], { stdio: ['ignore', 'pipe', 'pipe'] });
   driver.on('error', error => { driverFailure = error; });
   await waitFor(async () => { if (driverFailure) throw driverFailure; return command('GET', '/status'); }, 'geckodriver startup');
   const uuid = '12e4fca2-2959-4dfb-9b56-96d25365775e';
@@ -43,6 +46,7 @@ try {
   } } });
   session = created.sessionId;
   const route = `/session/${session}`;
+  await command('POST', route + '/timeouts', { pageLoad: 10000, script: 10000 });
   const script = (code, args = []) => command('POST', route + '/execute/sync', { script: code, args });
   const navigate = url => command('POST', route + '/url', { url });
   const click = async selector => {
@@ -67,6 +71,23 @@ try {
     await waitFor(async () => (await command('GET', route + '/url')).startsWith(`moz-extension://${uuid}/blocked.html#`), selector);
     assert.ok(await script("return document.querySelector('#reason').textContent.includes('127.0.0.1')"));
   }
+  await navigate(options);
+  await waitFor(() => script("return document.querySelector('.rule-toggle')?.getAttribute('aria-checked') === 'true'"), 'enabled switch');
+  await click('.rule-toggle');
+  await waitFor(() => script("return document.querySelector('.rule-toggle')?.getAttribute('aria-checked') === 'false' && !document.querySelector('.rule-toggle').disabled"), 'paused rule');
+  assert.ok(await script("return document.activeElement === document.querySelector('.rule-toggle')"), 'switch keeps keyboard focus after save');
+  await navigate(fixture.origin + '/section/paused');
+  assert.ok(await script("return !!document.querySelector('#allowed-content')"));
+  assert.equal(fixture.hits.get('/section/paused'), 1, 'paused rule allows the request through');
+  await navigate(options);
+  await waitFor(() => script("return document.querySelector('.rule-toggle')?.getAttribute('aria-checked') === 'false'"), 'paused state survives options reload');
+  await script("document.querySelector('.rule-toggle').focus()");
+  await command('POST', route + '/actions', { actions: [{ type: 'key', id: 'keyboard', actions: [
+    { type: 'keyDown', value: ' ' }, { type: 'keyUp', value: ' ' }
+  ] }] });
+  await waitFor(() => script("return document.querySelector('.rule-status')?.textContent.includes('Сеть: активна') && document.querySelector('.rule-toggle')?.getAttribute('aria-checked') === 'true'"), 'keyboard resumes rule');
+  try { await navigate(fixture.origin + '/section/resumed'); } catch { /* Native DNR error. */ }
+  assert.equal(fixture.hits.get('/section/resumed') ?? 0, 0, 'resumed rule blocks the request again');
   await navigate(fixture.origin + '/allowed'); await click('#new-tab');
   await waitFor(async () => (await command('GET', route + '/window/handles')).length === 2, 'new tab');
   assert.equal(fixture.hits.get('/section/new-tab') ?? 0, 0);
@@ -75,12 +96,19 @@ try {
   await mkdir('.test-output', { recursive: true });
   for (const width of [320, 768, 1024, 1440]) {
     await command('POST', route + '/window/rect', { width, height: 1000 });
+    await script("document.querySelector('.rule-toggle').scrollIntoView({block: 'center'})");
+    const viewport = await script('return { width: innerWidth, height: innerHeight }');
+    console.log(`Options viewport: requested window ${width}, actual ${viewport.width} × ${viewport.height}`);
     const overflow = await script('return document.documentElement.scrollWidth > innerWidth');
     assert.equal(overflow, false, `horizontal overflow at ${width}`);
     const png = await command('GET', route + '/screenshot');
     await writeFile(`.test-output/firefox-options-${width}.png`, Buffer.from(png, 'base64'));
   }
-  console.log('PASS real Firefox: extension settings, applied DNR, direct request prevention, path boundary, MAIN SPA, replaceState, link capture, new tab, responsive UI.');
+  await click('.rule-toggle');
+  await waitFor(() => script("return document.querySelector('.rule-toggle')?.getAttribute('aria-checked') === 'false' && !document.querySelector('.rule-toggle').disabled"), 'disabled screenshot');
+  await script("document.querySelector('.rule-toggle').scrollIntoView({block: 'center'})");
+  await writeFile('.test-output/firefox-toggle-disabled.png', Buffer.from(await command('GET', route + '/screenshot'), 'base64'));
+  console.log('PASS real Firefox: extension settings, applied DNR, direct request prevention, path boundary, MAIN SPA, replaceState, link capture, pause/resume, keyboard switch and focus, new tab, options layout without overflow.');
   console.log('Manual checklist remains for restart, native permission denial/revocation/private mode and genuine BFCache/media on each platform.');
 } catch (error) {
   console.error('Firefox integration NOT PASSED:', error.message);

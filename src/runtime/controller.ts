@@ -75,6 +75,7 @@ export class Controller {
   private async apply(cleanUnused: boolean): Promise<Snapshot> {
     const { rules } = this.state!.config;
     const errors: string[] = [];
+    // Keep access for paused rules so resuming does not require another grant.
     const desiredOrigins = allOrigins(rules);
     this.stage = 'permissions:getAll';
     const grants = await this.api.permissions.getAll();
@@ -86,7 +87,7 @@ export class Controller {
     this.stage = 'permissions:contains';
     const statuses = await Promise.all(rules.map(async rule => ({ id: rule.id,
       permission: await this.api.permissions.contains({ origins: originsFor(rule) }), network: false, script: false })));
-    const permitted = rules.filter(rule => statuses.find(status => status.id === rule.id)!.permission);
+    const permitted = rules.filter(rule => rule.enabled !== false && statuses.find(status => status.id === rule.id)!.permission);
     const network = compileNetworkRules(permitted);
     let networkStage = 'dnr:limits';
     try {
@@ -115,7 +116,7 @@ export class Controller {
         const expected = network[permitted.findIndex(row => row.id === status.id)];
         status.network = !!expected && actual.some(rule => sameNetwork(rule, expected));
       }
-      if (statuses.some(status => status.permission && !status.network)) throw new Error('readback');
+      if (permitted.some(rule => !statuses.find(status => status.id === rule.id)!.network)) throw new Error('readback');
     } catch { errors.push(`Сетевая политика не применена полностью (${networkStage}). Старые сетевые правила могли сохраниться; нажмите «Перепроверить» или перезапустите расширение.`); }
     const matches = allOrigins(permitted);
     this.stage = 'scripts:registration';
@@ -141,7 +142,7 @@ export class Controller {
         const valid = specs.every(spec => actual.some(script => script.id === spec.id &&
           script.matches?.join() === matches.join() && script.world === spec.world && script.runAt === 'document_start' && script.allFrames === true));
         if (!valid) throw new Error('readback');
-        for (const status of statuses) status.script = status.permission;
+        for (const status of statuses) status.script = permitted.some(rule => rule.id === status.id);
       }
     } catch { errors.push('Защита внутри страниц не зарегистрирована полностью. Сетевая блокировка и SPA могут иметь разное состояние.'); }
     this.stage = 'permissions:verify';
@@ -160,7 +161,7 @@ export class Controller {
     const { config } = await this.snapshot();
     const url = parseHttpUrl(source);
     if (!url) return [];
-    const applicable = config.rules.filter(rule => domainMatches(rule, url.hostname));
+    const applicable = config.rules.filter(rule => rule.enabled !== false && domainMatches(rule, url.hostname));
     const access = await Promise.all(applicable.map(rule => this.api.permissions.contains({ origins: originsFor(rule) })));
     return applicable.filter((_, index) => access[index]);
   }

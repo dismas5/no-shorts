@@ -22,7 +22,9 @@ test('strict input validation, unknown fields and bounded import', () => {
   for (const path of ['section', '/a?x', '/a#b', '/a\\b', '/a b', '/%', '/%xx', '/\n', '/' + 'a'.repeat(257)]) assert.throws(() => rule({ path }));
   assert.throws(() => normalizeRule({ ...rule(), includeSubdomains: 'false' }));
   assert.throws(() => normalizeRule({ ...rule(), id: 'bad#id' }));
-  assert.throws(() => normalizeRule({ ...rule(), enabled: true }));
+  assert.throws(() => normalizeRule({ ...rule(), enabled: 'false' }));
+  assert.throws(() => normalizeRule({ ...rule(), enabled: null }));
+  assert.throws(() => normalizeRule({ ...rule(), unknown: true }));
   assert.throws(() => rule({ kind: 'site' }));
   assert.throws(() => normalizeConfig({ schemaVersion: 2, rules: [rule(), rule()] }));
   assert.throws(() => normalizeConfig({ schemaVersion: 3, rules: [] }));
@@ -35,6 +37,17 @@ test('v1 migration defaults subdomains false, keeps ID; unknown future version r
   const { includeSubdomains: _old, ...old } = rule();
   assert.deepEqual(migrateConfig({ schemaVersion: 1, rules: [old] }), { schemaVersion: 2, rules: [rule()] });
   assert.throws(() => migrateConfig({ schemaVersion: 999, rules: [] }));
+});
+test('disabled rules roundtrip, never match or compile; older rules stay enabled', () => {
+  const disabled = rule({ enabled: false });
+  const enabled = rule({ id: 'two', enabled: true });
+  const config = { schemaVersion: 2 as const, rules: [disabled, enabled, rule({ id: 'old' })] };
+  assert.deepEqual(parseImport(exportConfig(config)), config);
+  assert.equal(matchUrl([disabled], 'https://focus.test/section'), null);
+  assert.equal(matchUrl(config.rules, 'https://focus.test/section')?.id, 'two');
+  assert.equal(matchUrl([rule()], 'https://focus.test/section')?.id, 'one');
+  assert.deepEqual(compileNetworkRules([disabled]), []);
+  assert.equal(compileNetworkRules(config.rules).length, 2);
 });
 const cases: [string, boolean][] = [
   ['https://focus.test/section', true], ['http://focus.test/section/', true],

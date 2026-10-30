@@ -4,7 +4,7 @@
 
 ## Подготовка
 
-- [ ] `npm ci && npm run check && npm run package` проходит на Mac.
+- [ ] `npm ci && npm run check && npm run package -- safari` проходит на Mac.
 - [ ] `npm run safari:generate` действительно создал app и extension targets; предупреждения конвертера разобраны.
 - [ ] После конвертации manifest всё ещё содержит только три API permissions и optional HTTP/HTTPS диапазон, без required hosts и тестовых адресов.
 - [ ] macOS target собран и запущен через containing app, extension включён в Safari 18.

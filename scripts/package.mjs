@@ -1,6 +1,6 @@
-import { readFile, writeFile, mkdir, symlink, rename, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, symlink, rename, rm, readdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { files } from './audit.mjs';
+import { spawnSync } from 'node:child_process';
 function crc(bytes) {
   let n = -1;
   for (const b of bytes) { n ^= b; for (let i = 0; i < 8; i++) n = (n >>> 1) ^ (n & 1 ? 0xedb88320 : 0); }
@@ -20,27 +20,44 @@ export async function zip(root, paths) {
   const index = Buffer.concat(directory), end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50); end.writeUInt16LE(paths.length, 8); end.writeUInt16LE(paths.length, 10); end.writeUInt32LE(index.length, 12); end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, index, end]);
 }
+const targets = { safari: 'safari-webextension.zip', firefox: 'firefox-unsigned.xpi' };
+const target = process.argv[2];
+if (process.argv.length !== 3 || !Object.hasOwn(targets, target)) {
+  console.error('Usage: npm run package -- <safari|firefox>');
+  process.exit(1);
+}
 const { version } = JSON.parse(await readFile('package.json', 'utf8'));
-await mkdir('artifacts/safari', { recursive: true });
-const sums = [];
-for (const [target, suffix] of [['firefox', 'firefox-unsigned.xpi'], ['safari', 'safari-webextension.zip']]) {
-  const root = `dist/${target}`, bytes = await zip(root, await files(root));
-  const name = `${target === 'safari' ? 'safari/' : ''}local-blocklist-${version}-${suffix}`;
-  await writeFile(`artifacts/${name}`, bytes); sums.push(`${createHash('sha256').update(bytes).digest('hex')}  ${name}`);
+if (!/^\d+(?:\.\d+){0,3}$/.test(version)) throw new Error('Invalid package version');
+const build = spawnSync(process.execPath, ['scripts/build.mjs', target], { stdio: 'inherit' });
+if (build.error) throw build.error;
+if (build.status !== 0) process.exit(build.status ?? 1);
+const { files } = await import('./audit.mjs');
+const dir = `artifacts/${version}`;
+await mkdir(dir, { recursive: true });
+const name = `local-blocklist-${targets[target]}`;
+await writeFile(`${dir}/${name}`, await zip(`dist/${target}`, await files(`dist/${target}`)));
+const archives = (await readdir(dir)).filter(file => /^local-blocklist-(safari-webextension\.zip|firefox-unsigned\.xpi)$/.test(file)).sort();
+const sums = await Promise.all(archives.map(async file => `${createHash('sha256').update(await readFile(`${dir}/${file}`)).digest('hex')}  ${file}`));
+await writeFile(`${dir}/SHA256SUMS`, sums.join('\n') + '\n');
+async function updateLink(name, value) {
+  const path = `artifacts/${name}`, pending = `${path}.${randomUUID()}.tmp`;
+  try { await symlink(value, pending); await rename(pending, path); }
+  finally { await rm(pending, { force: true }); }
 }
-const sourceFiles = ['package.json', 'package-lock.json', 'tsconfig.json', '.gitignore', '.npmrc', 'AGENTS.md', 'README.md', 'LICENSE', ...(await Promise.all(['src', 'public', 'scripts', 'tests', 'docs', 'safari'].map(files))).flat()].sort();
-const source = await zip('', sourceFiles), sourceName = `local-blocklist-${version}-source.zip`;
-await writeFile(`artifacts/${sourceName}`, source); sums.push(`${createHash('sha256').update(source).digest('hex')}  ${sourceName}`);
-await writeFile('artifacts/SHA256SUMS', sums.join('\n') + '\n');
-// Publish the stable deployment link only after all packages are complete.
-// A relative target survives moving the artifacts directory; rename replaces
-// the old link atomically without leaving a missing-link window.
-const latest = 'artifacts/safari/local-blocklist-latest-safari-webextension.zip';
-const pending = `${latest}.${randomUUID()}.tmp`;
-try {
-  await symlink(`local-blocklist-${version}-safari-webextension.zip`, pending);
-  await rename(pending, latest);
-} finally {
-  await rm(pending, { force: true });
+await updateLink(`v${version}`, version);
+const compare = (a, b) => {
+  const left = a.split('.').map(BigInt), right = b.split('.').map(BigInt);
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    if ((left[i] ?? 0n) !== (right[i] ?? 0n)) return (left[i] ?? 0n) > (right[i] ?? 0n) ? 1 : -1;
+  }
+  return 0;
+};
+const versions = (await readdir('artifacts', { withFileTypes: true }))
+  .filter(entry => entry.isDirectory() && /^\d+(?:\.\d+){0,3}$/.test(entry.name)).map(entry => entry.name);
+const packaged = [];
+for (const candidate of versions) {
+  if ((await readdir(`artifacts/${candidate}`)).some(file => /^local-blocklist-(safari-webextension\.zip|firefox-unsigned\.xpi)$/.test(file))) packaged.push(candidate);
 }
-console.log('Deterministic unsigned packages and source archive: artifacts/');
+packaged.sort(compare);
+await updateLink('latest', packaged.at(-1));
+console.log(`Packaged ${target}: ${dir}/${name}`);

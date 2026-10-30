@@ -15,14 +15,15 @@
 ```bash
 npm ci
 npm run check
-npm run package
+npm run package -- safari
+npm run package -- firefox
 ```
 
 `check` выполняет строгую проверку типов, автоматические тесты, обе сборки, аудит пакетов и `web-ext lint --warnings-as-errors`. Доступ к npm нужен для первой установки инструментов. Никакие загрузки зависимостей не включаются в работу расширения.
 
-`npm run package` сохраняет Safari ZIP в `artifacts/safari/`. Firefox XPI, общий архив исходников и `SHA256SUMS` находятся в `artifacts/`. Пути в `SHA256SUMS` отсчитываются от `artifacts/`, включая подпапку Safari.
+`npm run package -- safari` или `npm run package -- firefox` упаковывает выбранную цель в `artifacts/<версия>/`. Обе команды сохраняют ранее собранные пакеты той же версии. `SHA256SUMS` находится в папке версии.
 
-Для загрузки на MacBook используйте постоянный путь `artifacts/safari/local-blocklist-latest-safari-webextension.zip`. Это относительная символическая ссылка на ZIP текущей упакованной версии. После успешного `npm run package` ссылка обновляется автоматически и атомарно; предыдущие версионные архивы сохраняются. В `SHA256SUMS` указаны версионные файлы. Правило деплоя закреплено в [AGENTS.md](AGENTS.md).
+В `artifacts/` ссылки `latest` и `v<версия>` указывают на папки версий. Для MacBook используйте `artifacts/latest/local-blocklist-safari-webextension.zip`. Safari ZIP содержит общие ресурсы для macOS и iOS; приложения для устройств собираются на Mac через Xcode. Архив исходников не создаётся: исходники хранятся в Git. Правила закреплены в [AGENTS.md](AGENTS.md).
 
 | Команда | Результат |
 | --- | --- |
@@ -31,7 +32,7 @@ npm run package
 | `npm run build` | `dist/firefox/` и `dist/safari/` |
 | `npm run check:package` | разрешения, CSP, отсутствие удалённых ресурсов и сетевых API |
 | `npm run lint:firefox` | официальный Mozilla web-ext/addons-linter |
-| `npm run package` | детерминированные unsigned XPI, Safari ZIP, архив исходников, SHA-256 |
+| `npm run package -- safari` / `-- firefox` | пакет выбранного браузера и SHA-256 в папке версии |
 | `npm run dev:firefox` | временный Firefox-профиль через web-ext |
 | `npm run test:firefox` | настоящий Firefox/geckodriver + локальные HTTP-страницы; нужны разрешённые loopback-соединения |
 | `npm run safari:generate` | настоящие Xcode-проекты через официальный инструмент Apple, только на Mac |
@@ -68,17 +69,17 @@ FIREFOX_BIN=/путь/к/firefox npm run start:firefox
 
 ### Постоянная установка
 
-Обычный Firefox требует **подпись Mozilla**. Файл `artifacts/local-blocklist-1.0.0-firefox-unsigned.xpi` не подписан; обычный Release Firefox не установит его постоянно.
+Обычный Firefox требует **подпись Mozilla**. Файл `artifacts/latest/local-blocklist-firefox-unsigned.xpi` не подписан; обычный Release Firefox не установит его постоянно.
 
 Для личного использования можно отправить пакет на **unlisted-подпись**, без публичного листинга. Исходники и пакет всё равно передаются Mozilla и подлежат её правилам. Создайте AMO developer account и получите JWT credentials; не помещайте их в репозиторий. Поменяйте ID в `scripts/build.mjs`, если уже зарегистрировали другой ID. После первой регистрации сохраняйте тот же ID при обновлениях.
 
 ```bash
 npm run check
-npx web-ext sign --source-dir dist/firefox --artifacts-dir artifacts/signed \
+npx web-ext sign --source-dir dist/firefox --artifacts-dir artifacts/latest \
   --channel=unlisted --api-key="$AMO_JWT_ISSUER" --api-secret="$AMO_JWT_SECRET"
 ```
 
-Можно загрузить ZIP/XPI через AMO Developer Hub и выбрать самостоятельное распространение. При запросе исходников приложите source ZIP, lockfile и инструкции `npm ci && npm run build`. Подписанный XPI установите через `about:addons` → меню шестерёнки → «Установить дополнение из файла». Подробности: [подпись и распространение Mozilla](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/).
+Можно загрузить ZIP/XPI через AMO Developer Hub и выбрать самостоятельное распространение. При запросе исходников предоставьте архив нужного Git-коммита, lockfile и инструкции `npm ci && npm run build`. Подписанный XPI установите через `about:addons` → меню шестерёнки → «Установить дополнение из файла». Подробности: [подпись и распространение Mozilla](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/).
 
 Сетевое обращение `web-ext sign` к Mozilla относится к подписи, а не к работе расширения. Запросы самого браузера, обновления браузера и инструментов также не являются трафиком Local Blocklist.
 
@@ -158,6 +159,8 @@ LB_SCHEME='имя схемы' LB_TEAM='ваш Team ID' LB_ALLOW_PROVISIONING=1 n
 
 ## Импорт, экспорт, хранение
 
+У каждого правила есть переключатель «Включено / Выключено». Выключенное правило остаётся в списке, но не участвует в сетевой блокировке, защите переходов внутри сайта и проверке URL. Его можно редактировать и включить обратно. Состояние сохраняется между запусками и входит в JSON-экспорт. Выданный доступ к сайту сохраняется до удаления правила или изменения его домена; если доступ отозван в браузере, при включении правило запросит его снова. Другие включённые правила продолжают действовать, в том числе на том же сайте.
+
 Экспорт — JSON с `schemaVersion: 2` и `rules`. ID сохраняются. Скачайте файл или скопируйте текст из поля экспорта (в том числе если Safari иначе обрабатывает скачивание). Минимальная конфигурация:
 
 ```json
@@ -172,6 +175,7 @@ LB_SCHEME='имя схемы' LB_TEAM='ваш Team ID' LB_ALLOW_PROVISIONING=1 n
   "rules": [
     {
       "id": "my-stable-id",
+      "enabled": true,
       "name": "Мой раздел",
       "domain": "focus.test",
       "includeSubdomains": false,
@@ -182,7 +186,7 @@ LB_SCHEME='имя схемы' LB_TEAM='ваш Team ID' LB_ALLOW_PROVISIONING=1 n
 }
 ```
 
-`kind`: `site`, `section`, `exact`. У `site` поле `path` отсутствует. Импорт сначала полностью валидируется, нормализуется и показывается в JSON-превью. Неизвестные поля, повторные ID, неизвестные версии и превышения лимитов отклоняются. Только кнопка «Заменить список» применяет результат. Это замена, не слияние; предварительно экспортируйте прежний список. Новые разрешения при импорте не запрашиваются массово: выдайте их по отдельности кнопками в строках правил.
+`enabled`: необязательный boolean; `false` выключает правило, отсутствие поля означает `true` для совместимости с прежними списками. `kind`: `site`, `section`, `exact`. У `site` поле `path` отсутствует. Импорт сначала полностью валидируется, нормализуется и показывается в JSON-превью. Неизвестные поля, повторные ID, неизвестные версии и превышения лимитов отклоняются. Только кнопка «Заменить список» применяет результат. Это замена, не слияние; предварительно экспортируйте прежний список. Новые разрешения при импорте не запрашиваются массово: выдайте их по отдельности кнопками в строках правил.
 
 Схема 1 поддерживается как миграция: та же форма правил со стабильными ID, но отсутствующий `includeSubdomains` означает `false`. При чтении локального хранилища или импорте она преобразуется в схему 2 и сохраняется. Неизвестную/повреждённую сохранённую конфигурацию расширение не затирает пустым списком.
 

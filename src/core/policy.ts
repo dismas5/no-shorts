@@ -3,6 +3,8 @@ export const MAX_RULES = 100;
 export type Kind = 'site' | 'section' | 'exact';
 export interface Rule {
   id: string;
+  // Older configurations omit this field; those rules remain enabled.
+  enabled?: boolean;
   name?: string;
   domain: string;
   includeSubdomains: boolean;
@@ -51,13 +53,17 @@ function normalizePath(value: unknown, domain: string, kind: Kind): string {
 }
 export function normalizeRule(value: unknown): Rule {
   const row = object(value);
-  keys(row, ['id', 'name', 'domain', 'includeSubdomains', 'kind', 'path']);
+  keys(row, ['id', 'enabled', 'name', 'domain', 'includeSubdomains', 'kind', 'path']);
   if (typeof row.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(row.id)) return fail('Некорректный идентификатор правила.');
   const domain = normalizeDomain(row.domain);
   if (typeof row.includeSubdomains !== 'boolean') return fail('Укажите признак включения поддоменов.');
   if (row.includeSubdomains && /^[\d.]+$/.test(domain)) return fail('У IP-адреса нет поддоменов.');
   if (row.kind !== 'site' && row.kind !== 'section' && row.kind !== 'exact') return fail('Неизвестный тип правила.');
   const rule: Rule = { id: row.id, domain, includeSubdomains: row.includeSubdomains, kind: row.kind };
+  if (row.enabled !== undefined) {
+    if (typeof row.enabled !== 'boolean') return fail('Признак включения правила должен быть true или false.');
+    rule.enabled = row.enabled;
+  }
   if (row.name !== undefined) {
     if (typeof row.name !== 'string' || row.name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(row.name)) return fail('Название: до 100 символов без управляющих знаков.');
     if (row.name.trim()) rule.name = row.name.trim();
@@ -107,7 +113,7 @@ export function matchUrl(rules: readonly Rule[], value: string): Rule | null {
   const url = parseHttpUrl(value);
   if (!url) return null;
   const path = canonicalPath(url.pathname);
-  return rules.find(rule => domainMatches(rule, url.hostname) && (
+  return rules.find(rule => rule.enabled !== false && domainMatches(rule, url.hostname) && (
     rule.kind === 'site' || path === rule.path ||
     (rule.kind === 'section' && (rule.path === '/' || path.startsWith(`${rule.path}/`)))
   )) ?? null;

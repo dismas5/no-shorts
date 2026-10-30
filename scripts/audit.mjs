@@ -6,7 +6,9 @@ export async function files(root) {
   const nested = await Promise.all(entries.map(entry => entry.isDirectory() ? files(path.join(root, entry.name)) : [path.join(root, entry.name)]));
   return nested.flat().sort();
 }
-for (const target of ['firefox', 'safari']) {
+const selected = process.argv.slice(2);
+if (selected.length > 1 || selected.some(target => !['firefox', 'safari'].includes(target))) throw new Error('Usage: node scripts/audit.mjs [firefox|safari]');
+for (const target of selected.length ? selected : ['firefox', 'safari']) {
   const root = `dist/${target}`, manifest = JSON.parse(await readFile(`${root}/manifest.json`, 'utf8'));
   assert.deepEqual(manifest.permissions, ['storage', 'scripting', 'declarativeNetRequestWithHostAccess']);
   assert.deepEqual(manifest.optional_host_permissions, ['http://*/*', 'https://*/*']);

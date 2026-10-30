@@ -13,7 +13,9 @@ const base = {
   options_ui: { page: 'options.html', open_in_tab: true },
   content_security_policy: { extension_pages: "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" }
 };
-for (const target of ['firefox', 'safari']) {
+const selected = process.argv.slice(2);
+if (selected.length > 1 || selected.some(target => !['firefox', 'safari'].includes(target))) throw new Error('Usage: node scripts/build.mjs [firefox|safari]');
+for (const target of selected.length ? selected : ['firefox', 'safari']) {
   const outdir = `dist/${target}`;
   await rm(outdir, { recursive: true, force: true }); await mkdir(outdir, { recursive: true });
   await cp('public', outdir, { recursive: true });
@@ -26,4 +28,4 @@ for (const target of ['firefox', 'safari']) {
   }, gecko_android: { strict_min_version: '142.0' } };
   await writeFile(`${outdir}/manifest.json`, JSON.stringify(manifest, null, 2) + '\n');
 }
-console.log('Built dist/firefox and dist/safari (no runtime dependencies).');
+console.log(`Built ${selected.length ? `dist/${selected[0]}` : 'dist/firefox and dist/safari'} (no runtime dependencies).`);
