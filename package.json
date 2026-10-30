@@ -1,0 +1,32 @@
+{
+  "name": "local-blocklist",
+  "version": "1.0.6",
+  "private": true,
+  "type": "module",
+  "description": "Local, user-defined WebExtensions blocklist for Firefox and Safari",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/test.mjs",
+    "check:package": "node scripts/audit.mjs",
+    "lint:firefox": "node scripts/web-ext.mjs lint --source-dir dist/firefox --warnings-as-errors",
+    "check": "npm run typecheck && npm test && npm run build && npm run check:package && npm run lint:firefox",
+    "package": "npm run build && node scripts/package.mjs",
+    "dev:firefox": "npm run build && node scripts/web-ext.mjs run --source-dir dist/firefox",
+    "start:firefox": "bash scripts/start-firefox.sh",
+    "test:firefox": "npm run build && node scripts/firefox-test.mjs",
+    "safari:generate": "bash scripts/safari-generate.sh",
+    "safari:build": "bash scripts/safari-build.sh"
+  },
+  "devDependencies": {
+    "@types/firefox-webext-browser": "143.0.0",
+    "@types/node": "22.19.0",
+    "esbuild": "0.25.12",
+    "linkedom": "0.18.12",
+    "typescript": "5.9.3",
+    "web-ext": "10.8.0"
+  }
+}

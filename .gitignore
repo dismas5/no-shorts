@@ -1,0 +1,11 @@
+node_modules/
+build/
+.test-output/
+/dist/
+/artifacts/
+/repository/
+/.agents/
+/.aws/
+/.codex/
+*.log
+.DS_Store
