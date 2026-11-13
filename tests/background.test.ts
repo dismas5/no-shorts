@@ -261,3 +261,24 @@ test('storage failures return actionable sanitized errors without clearing saved
   const write = await rejectedWrite.send({ type: 'reconcile' }, sender);
   assert.match((write.replies[0] as { error: string }).error, /storage\\.local\\.set/);
 });
+
+test('unambiguously empty legacy storage is recovered without losing revision', async () => {
+  const sender = { id: 'local-blocklist', url: optionsUrl };
+  for (const policy of [null, {}, { rules: [] }]) {
+    const background = await setup(false, { policy, revision: 12 });
+    const loaded = await background.send({ type: 'reconcile' }, sender);
+    assert.equal((loaded.replies[0] as { ok: boolean }).ok, true);
+    assert.deepEqual(background.mock.store.policy, { schemaVersion: 2, rules: [] });
+    assert.equal(background.mock.store.revision, 12);
+  }
+});
+test('ambiguous or nonempty malformed storage is never silently overwritten', async () => {
+  const sender = { id: 'local-blocklist', url: optionsUrl };
+  for (const policy of [{ rules: [{ domain: 'example.com' }] }, { unexpected: true }, [], '']) {
+    const background = await setup(false, { policy, revision: 3 });
+    const loaded = await background.send({ type: 'reconcile' }, sender);
+    assert.equal((loaded.replies[0] as { ok: boolean }).ok, false);
+    assert.deepEqual(background.mock.store.policy, policy);
+    assert.equal(background.mock.store.revision, 3);
+  }
+});
