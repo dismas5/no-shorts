@@ -165,10 +165,21 @@ el('test-form').addEventListener('submit', event => {
 el('export').addEventListener('click', () => {
   if (!snapshot) return;
   imported = undefined; const content = exportConfig(snapshot.config);
-  showJson(content, 'Экспорт текущего списка. Можно сохранить файл или скопировать JSON.');
+  // Safari cannot navigate to blob:safari-web-extension URLs (WebKitBlobResource:1).
+  // Keep the JSON visible for copying instead of opening a broken tab.
+  const isSafariExtension = browser.runtime.getURL('').startsWith('safari-web-extension:');
+  showJson(content, isSafariExtension
+    ? 'В Safari выделите и скопируйте JSON, затем сохраните как local-blocklist.json в текстовом редакторе.'
+    : 'Экспорт текущего списка. Можно сохранить файл или скопировать JSON.');
+  if (isSafariExtension) return;
   const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'local-blocklist.json';
   document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+});
+el('json-select').addEventListener('click', () => {
+  const preview = el<HTMLTextAreaElement>('json-preview');
+  preview.focus(); preview.select();
+  announce('JSON выделен. Скопируйте его сочетанием ⌘C (macOS) или Ctrl+C.');
 });
 function showJson(content: string, summary: string): void {
   el('json-panel').hidden = false; el<HTMLTextAreaElement>('json-preview').value = content;
