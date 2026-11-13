@@ -82,6 +82,7 @@ test('missing background handshake reports a startup failure and can be retried'
 });
 test('settings start empty, validate, add with denied access, edit same ID, grant and delete', async () => {
   const dom = await setup();
+  assert.ok(dom.window.document.getElementById('app-version')!.textContent.includes('Версия недоступна'));
   assert.ok(dom.window.document.getElementById('rule-list')!.textContent.includes('Пока здесь свободно'));
   dom.input('domain', 'https://wrong.test'); dom.submit(); await settle();
   assert.equal((await dom.controller.snapshot()).config.rules.length, 0);
