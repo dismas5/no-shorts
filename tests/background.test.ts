@@ -249,7 +249,7 @@ test('storage failures return actionable sanitized errors without clearing saved
     mock.api.storage.local.get = async () => { throw new Error('private sensitive browser detail'); };
   });
   const read = await rejectedRead.send({ type: 'reconcile' }, sender);
-  assert.match((read.replies[0] as { error: string }).error, /storage\\.local\\.get/);
+  assert.match((read.replies[0] as { error: string }).error, /storage\.local\.get/);
   assert.doesNotMatch((read.replies[0] as { error: string }).error, /private sensitive/);
 
   const invalid = await setup(false, { policy: { schemaVersion: 99, rules: [] }, revision: 7 });
@@ -259,7 +259,7 @@ test('storage failures return actionable sanitized errors without clearing saved
 
   const rejectedWrite = await setup(false, undefined, mock => { mock.fail('storage'); });
   const write = await rejectedWrite.send({ type: 'reconcile' }, sender);
-  assert.match((write.replies[0] as { error: string }).error, /storage\\.local\\.set/);
+  assert.match((write.replies[0] as { error: string }).error, /storage\.local\.set/);
 });
 
 test('unambiguously empty legacy storage is recovered without losing revision', async () => {
