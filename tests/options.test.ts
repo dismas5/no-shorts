@@ -9,6 +9,7 @@ const code = await source('src/ui/options.ts');
 async function setup(startup?: 'reject' | 'pending' | 'no-listener') {
   const dom = harness(await readFile('public/options.html', 'utf8'));
   const mock = mockBrowser(); const controller = new Controller(mock.api);
+  let safari = false;
   let grant = false; const requested: string[][] = [];
   dom.context.browser = {
     permissions: { request: async ({ origins }: { origins: string[] }) => { requested.push(origins); if (grant) {
@@ -17,7 +18,8 @@ async function setup(startup?: 'reject' | 'pending' | 'no-listener') {
       mock.api.permissions.contains = async ({ origins: values }) => values?.every(origin => requested.flat().includes(origin)) ?? false;
       mock.grant(config.rules);
     } return grant; } },
-    runtime: { connect: connectTo(async (message: Record<string, unknown>) => {
+    runtime: { getURL: () => safari ? 'safari-web-extension://test/' : 'moz-extension://test/',
+      connect: connectTo(async (message: Record<string, unknown>) => {
       if (startup === 'no-listener') { startup = undefined; return undefined; }
       if (message.type === 'diagnostics') return { ok: true, value: {
         version: '1.0.2', senderId: 'same', optionsUrlMatches: true, senderUrlSource: 'url', stage: 'ready'
@@ -38,7 +40,7 @@ async function setup(startup?: 'reject' | 'pending' | 'no-listener') {
   const input = (id: string, value: string) => { (dom.window.document.getElementById(id) as HTMLInputElement).value = value; };
   const click = (id: string) => dom.fire(dom.window.document.getElementById(id)!, 'click');
   const submit = () => dom.fire(dom.window.document.getElementById('rule-form')!, 'submit');
-  return { ...dom, mock, controller, input, click, submit, requested, allow: () => { grant = true; } };
+  return { ...dom, mock, controller, input, click, submit, requested, allow: () => { grant = true; }, useSafari: () => { safari = true; } };
 }
 test('failed initialization explains why saving is unavailable and allows a retry', async () => {
   const dom = await setup('reject');
@@ -115,4 +117,17 @@ test('JSON import is previewed before replacement; invalid import leaves list un
   assert.deepEqual(exported, (await dom.controller.snapshot()).config);
   dom.input('test-url', 'https://focus.test/page/'); dom.fire(dom.window.document.getElementById('test-form')!, 'submit');
   assert.ok(dom.window.document.getElementById('test-result')!.textContent.includes('не подтверждена'));
+});
+
+test('Safari JSON export previews content without creating a blob URL', async () => {
+  const dom = await setup();
+  dom.useSafari();
+  dom.context.URL = class extends URL {
+    static createObjectURL(): string { throw new Error('Safari must not create a blob URL'); }
+  };
+  dom.click('export');
+  assert.equal(dom.window.document.getElementById('json-panel')!.hidden, false);
+  assert.deepEqual(JSON.parse((dom.window.document.getElementById('json-preview') as HTMLTextAreaElement).value),
+    (await dom.controller.snapshot()).config);
+  assert.match(dom.window.document.getElementById('import-summary')!.textContent, /Safari/);
 });
