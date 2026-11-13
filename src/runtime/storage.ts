@@ -11,12 +11,22 @@ export class StorageStateError extends Error {
     this.name = 'StorageStateError';
   }
 }
+// Accept only unambiguously empty legacy placeholders. Never erase unknown or
+// malformed nonempty policy data, which might contain recoverable user rules.
+function isEmptyPlaceholder(policy: unknown): boolean {
+  if (policy === null) return true;
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return false;
+  const keys = Object.keys(policy);
+  return keys.length === 0 ||
+    (keys.length === 1 && keys[0] === 'rules' && Array.isArray((policy as { rules: unknown }).rules) &&
+      (policy as { rules: unknown[] }).rules.length === 0);
+}
 export async function loadState(api: typeof browser): Promise<StoredState> {
   let value: Awaited<ReturnType<typeof api.storage.local.get>>;
   try { value = await api.storage.local.get(['policy', 'revision']); }
   catch { throw new StorageStateError('read'); }
   let config: Config;
-  try { config = value.policy === undefined ? emptyConfig() : migrateConfig(value.policy); }
+  try { config = value.policy === undefined || isEmptyPlaceholder(value.policy) ? emptyConfig() : migrateConfig(value.policy); }
   catch { throw new StorageStateError('validate'); }
   const revision = Number.isSafeInteger(value.revision) && value.revision >= 0 ? value.revision as number : 0;
   if (value.policy === undefined || JSON.stringify(value.policy) !== JSON.stringify(config)) {
