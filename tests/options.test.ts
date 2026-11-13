@@ -159,3 +159,33 @@ test('JSON import is previewed before replacement; invalid import leaves list un
   dom.input('test-url', 'https://focus.test/page/'); dom.fire(dom.window.document.getElementById('test-form')!, 'submit');
   assert.ok(dom.window.document.getElementById('test-result')!.textContent.includes('не подтверждена'));
 });
+for (const populated of [false, true]) test(`JSON download uses a self-contained URL and preserves ${populated ? 'Unicode and paused rules' : 'an empty list'}`, async () => {
+  const dom = await setup();
+  if (populated) {
+    dom.input('domain', 'focus.test'); dom.input('rule-name', 'Моё правило 🔒: "& # + % ?"'); dom.submit(); await settle();
+    dom.fire(dom.window.document.querySelector('[role="switch"]')!, 'click'); await settle();
+  }
+  const config = (await dom.controller.snapshot()).config;
+  const downloads: { href: string; filename: string }[] = [];
+  dom.window.document.body.addEventListener('click', event => {
+    const anchor = event.target as HTMLAnchorElement;
+    if (anchor.tagName !== 'A') return;
+    event.preventDefault();
+    assert.ok(anchor.isConnected, 'download starts while the link is attached');
+    downloads.push({ href: anchor.getAttribute('href')!, filename: anchor.download });
+  });
+  dom.click('export');
+  assert.equal(downloads.length, 1, 'download starts within the export click');
+  assert.equal(downloads[0]!.filename, 'local-blocklist.json');
+  assert.match(downloads[0]!.href, /^data:application\/json;charset=utf-8,/);
+  const response = await fetch(downloads[0]!.href);
+  const content = await response.text();
+  assert.equal(content, (dom.window.document.getElementById('json-preview') as HTMLTextAreaElement).value);
+  assert.deepEqual(JSON.parse(content), config);
+  assert.equal(dom.window.document.querySelector('a[download]'), null);
+  const input = dom.window.document.getElementById('import-file')!;
+  Object.assign(input, { files: [{ size: new TextEncoder().encode(content).length, text: async () => content }] });
+  dom.fire(input, 'change'); await settle();
+  dom.click('import-apply'); await settle();
+  assert.deepEqual((await dom.controller.snapshot()).config, config, 'downloaded JSON can be imported losslessly');
+});

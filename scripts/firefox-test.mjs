@@ -7,6 +7,8 @@ import { startFixtures } from './fixture-server.mjs';
 // Snap Firefox and host geckodriver must both see the test extension files.
 await mkdir('build', { recursive: true });
 const temp = await mkdtemp(path.resolve('build', 'firefox-test-'));
+const downloads = path.join(temp, 'downloads');
+await mkdir(downloads);
 let fixture, driver, session;
 const driverPort = Number(process.env.LB_DRIVER_PORT ?? 4447);
 const endpoint = `http://127.0.0.1:${driverPort}`;
@@ -41,7 +43,9 @@ try {
   const created = await command('POST', '/session', { capabilities: { alwaysMatch: { browserName: 'firefox',
     'moz:firefoxOptions': { args: ['-headless'], ...(process.env.FIREFOX_BIN ? { binary: process.env.FIREFOX_BIN } : {}), prefs: {
       'extensions.webextensions.uuids': JSON.stringify({ [manifest.browser_specific_settings.gecko.id]: uuid }),
-      'media.autoplay.default': 0
+      'media.autoplay.default': 0,
+      'browser.download.dir': downloads, 'browser.download.folderList': 2, 'browser.download.useDownloadDir': true,
+      'browser.helperApps.neverAsk.saveToDisk': 'application/json'
     } }
   } } });
   session = created.sessionId;
@@ -57,7 +61,7 @@ try {
   const options = `moz-extension://${uuid}/options.html`;
   await navigate(options);
   await waitFor(() => script("return document.querySelector('#status')?.textContent.includes('Список пуст')"), 'empty options');
-  await script("document.querySelector('#domain').value='127.0.0.1';document.querySelector('#kind').value='section';document.querySelector('#kind').dispatchEvent(new Event('change'));document.querySelector('#path').value='/section';");
+  await script("document.querySelector('#domain').value='127.0.0.1';document.querySelector('#rule-name').value='Моё правило 🔒 & # + %';document.querySelector('#kind').value='section';document.querySelector('#kind').dispatchEvent(new Event('change'));document.querySelector('#path').value='/section';");
   await click('#save-rule');
   await waitFor(() => script("return document.querySelector('.rule-status')?.textContent.includes('Сеть: активна')"), 'applied real DNR');
   await navigate(fixture.origin + '/allowed');
@@ -69,7 +73,7 @@ try {
   for (const selector of ['#push', '#replace', '#blocked-link']) {
     await navigate(fixture.origin + '/allowed'); await click(selector);
     await waitFor(async () => (await command('GET', route + '/url')).startsWith(`moz-extension://${uuid}/blocked.html#`), selector);
-    assert.ok(await script("return document.querySelector('#reason').textContent.includes('127.0.0.1')"));
+    assert.ok(await script("return document.querySelector('#reason').textContent.includes('Моё правило 🔒 & # + %')"));
   }
   await navigate(options);
   await waitFor(() => script("return document.querySelector('.rule-toggle')?.getAttribute('aria-checked') === 'true'"), 'enabled switch');
@@ -81,6 +85,12 @@ try {
   assert.equal(fixture.hits.get('/section/paused'), 1, 'paused rule allows the request through');
   await navigate(options);
   await waitFor(() => script("return document.querySelector('.rule-toggle')?.getAttribute('aria-checked') === 'false'"), 'paused state survives options reload');
+  await click('#export');
+  const exported = await waitFor(async () => JSON.parse(await readFile(path.join(downloads, 'local-blocklist.json'), 'utf8')), 'JSON file downloaded');
+  assert.deepEqual(exported, JSON.parse(await script("return document.querySelector('#json-preview').value")));
+  assert.equal(exported.rules[0].name, 'Моё правило 🔒 & # + %');
+  assert.equal(exported.rules[0].enabled, false);
+  assert.equal(await command('GET', route + '/url'), options, 'export keeps the settings page open');
   await script("document.querySelector('.rule-toggle').focus()");
   await command('POST', route + '/actions', { actions: [{ type: 'key', id: 'keyboard', actions: [
     { type: 'keyDown', value: ' ' }, { type: 'keyUp', value: ' ' }
@@ -108,7 +118,7 @@ try {
   await waitFor(() => script("return document.querySelector('.rule-toggle')?.getAttribute('aria-checked') === 'false' && !document.querySelector('.rule-toggle').disabled"), 'disabled screenshot');
   await script("document.querySelector('.rule-toggle').scrollIntoView({block: 'center'})");
   await writeFile('.test-output/firefox-toggle-disabled.png', Buffer.from(await command('GET', route + '/screenshot'), 'base64'));
-  console.log('PASS real Firefox: extension settings, applied DNR, direct request prevention, path boundary, MAIN SPA, replaceState, link capture, pause/resume, keyboard switch and focus, new tab, options layout without overflow.');
+  console.log('PASS real Firefox: extension settings, JSON file download with Unicode and paused state, applied DNR, direct request prevention, path boundary, MAIN SPA, replaceState, link capture, pause/resume, keyboard switch and focus, new tab, options layout without overflow.');
   console.log('Manual checklist remains for restart, native permission denial/revocation/private mode and genuine BFCache/media on each platform.');
 } catch (error) {
   console.error('Firefox integration NOT PASSED:', error.message);

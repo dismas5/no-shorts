@@ -1,6 +1,6 @@
 {
   "name": "local-blocklist",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "private": true,
   "type": "module",
   "description": "Local, user-defined WebExtensions blocklist for Firefox and Safari",
