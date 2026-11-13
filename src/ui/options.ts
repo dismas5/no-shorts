@@ -14,6 +14,11 @@ const subdomains = el<HTMLInputElement>('subdomains');
 const kind = el<HTMLSelectElement>('kind');
 const path = el<HTMLInputElement>('path');
 const announce = (message: string) => { el('notice').textContent = message; };
+try {
+  el('app-version').textContent = `Версия ${browser.runtime.getManifest().version}`;
+} catch {
+  el('app-version').textContent = 'Версия недоступна';
+}
 function button(label: string, action: () => void): HTMLButtonElement {
   const node = document.createElement('button');
   node.type = 'button'; node.textContent = label; node.addEventListener('click', action);
