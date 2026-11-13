@@ -1,5 +1,6 @@
 import { allOrigins, exportConfig, matchUrl, normalizeRule, normalizeConfig, originsFor, parseHttpUrl, parseImport, ruleLabel, type Config, type Rule } from '../core/policy.ts';
 import { request } from '../runtime/contracts.ts';
+import { migrateConfig } from '../core/policy.ts';
 import type { BackgroundDiagnostics, Snapshot } from '../runtime/contracts.ts';
 import { el, errorText, text } from './dom.ts';
 let snapshot: Snapshot | undefined;
@@ -74,10 +75,12 @@ async function refreshProtection(): Promise<void> {
     background = await request<BackgroundDiagnostics>({ type: 'diagnostics' });
     startupDiagnostics('Фон ответил. Ожидание состояния защиты.', background);
     snapshot = await request<Snapshot>({ type: 'reconcile' });
+    el('recovery-panel').hidden = true;
     render();
     startupDiagnostics('Начальное состояние получено.', background);
   } catch (error) {
     el('status').textContent = 'Не удалось загрузить состояние защиты.';
+    el('recovery-panel').hidden = !errorText(error).includes('Сохранённые правила имеют неподдерживаемый или повреждённый формат');
     startupDiagnostics(`Загрузка остановлена: ${errorText(error)}`, background);
     // Diagnostics bypass the controller queue, including a hung browser API.
     if (background) {
@@ -154,6 +157,40 @@ async function remove(id: string): Promise<void> {
     if (editing === id) resetEditor(); announce('Правило удалено. Ненужные разрешения освобождены, если это не затрагивает другие правила.');
   });
 }
+
+el('recovery-reset').addEventListener('click', () => { void perform(async () => {
+  const error = el('recovery-error');
+  error.textContent = '';
+  if (!el<HTMLInputElement>('recovery-consent').checked) {
+    error.textContent = 'Сначала подтвердите замену списка пустым.';
+    return;
+  }
+  // This path must work without a loaded snapshot or a functioning controller.
+  // Keep the original policy and revision in a separately named storage entry
+  // before changing anything. Never silently reset an unknown policy.
+  const storage = browser.storage.local;
+  const before = await storage.get(['policy', 'revision']);
+  if (before.policy === undefined) throw new Error('Сохранённая конфигурация отсутствует. Нажмите «Перепроверить защиту».');
+  try {
+    migrateConfig(before.policy);
+    throw new Error('Сохранённая конфигурация уже корректна. Нажмите «Перепроверить защиту».');
+  } catch (cause) {
+    if (!(cause instanceof Error) || cause.message === 'Сохранённая конфигурация уже корректна. Нажмите «Перепроверить защиту».') throw cause;
+  }
+  const backupKey = `policyRecoveryBackup-${crypto.randomUUID()}`;
+  await storage.set({ [backupKey]: { policy: before.policy, revision: before.revision } });
+  const backup = (await storage.get(backupKey))[backupKey] as { policy: unknown; revision: unknown } | undefined;
+  if (!backup || JSON.stringify(backup.policy) !== JSON.stringify(before.policy) ||
+      JSON.stringify(backup.revision) !== JSON.stringify(before.revision)) {
+    throw new Error('Резервную копию не удалось подтвердить. Список не изменён.');
+  }
+  const revision = Number.isSafeInteger(before.revision) && (before.revision as number) >= 0 &&
+    (before.revision as number) < Number.MAX_SAFE_INTEGER ? (before.revision as number) + 1 : 1;
+  await storage.set({ policy: { schemaVersion: 2, rules: [] }, revision });
+  el<HTMLInputElement>('recovery-consent').checked = false;
+  await refreshProtection();
+  announce('Пустой список восстановлен. Предыдущая конфигурация сохранена в резервной копии хранилища.');
+}, 'recovery-error'); });
 el('refresh').addEventListener('click', () => { void perform(async () => {
   await refreshProtection(); announce('Состояние обновлено.');
 }); });
