@@ -14,6 +14,7 @@ async function setup(startup?: 'reject' | 'pending' | 'no-listener', storedState
   let safari = false;
   let grant = false; const requested: string[][] = [];
   dom.context.browser = {
+    storage: mock.api.storage,
     permissions: { request: async ({ origins }: { origins: string[] }) => { requested.push(origins); if (grant) {
       const { config } = await controller.snapshot();
       // The UI requests exactly the form's origins; the test records the request before saving.
