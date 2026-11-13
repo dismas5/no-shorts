@@ -6,9 +6,11 @@ import { mockBrowser } from './mock-browser.ts';
 import { harness, settle, source } from './dom-harness.ts';
 import { connectTo } from './mock-port.ts';
 const code = await source('src/ui/options.ts');
-async function setup(startup?: 'reject' | 'pending' | 'no-listener') {
+async function setup(startup?: 'reject' | 'pending' | 'no-listener', storedState?: Record<string, unknown>) {
   const dom = harness(await readFile('public/options.html', 'utf8'));
-  const mock = mockBrowser(); const controller = new Controller(mock.api);
+  const mock = mockBrowser();
+  if (storedState) Object.assign(mock.store, structuredClone(storedState));
+  const controller = new Controller(mock.api);
   let safari = false;
   let grant = false; const requested: string[][] = [];
   dom.context.browser = {
@@ -131,4 +133,37 @@ test('Safari JSON export previews content without creating a blob URL', async ()
   assert.deepEqual(JSON.parse((dom.window.document.getElementById('json-preview') as HTMLTextAreaElement).value),
     (await dom.controller.snapshot()).config);
   assert.match(dom.window.document.getElementById('import-summary')!.textContent, /Safari/);
+});
+
+test('explicit recovery backs up malformed policy before resetting and restores settings', async () => {
+  const original = { schemaVersion: 99, rules: [{ id: 'unknown-format' }] };
+  const dom = await setup(undefined, { policy: original, revision: 3 });
+  assert.equal(dom.window.document.getElementById('recovery-panel')!.hidden, false);
+  dom.click('recovery-reset'); await settle();
+  assert.deepEqual(dom.mock.store.policy, original, 'without consent do not change policy');
+  assert.match(dom.window.document.getElementById('recovery-error')!.textContent, /подтвердите/);
+  (dom.window.document.getElementById('recovery-consent') as HTMLInputElement).checked = true;
+  dom.click('recovery-reset'); await settle();
+  assert.deepEqual(dom.mock.store.policy, { schemaVersion: 2, rules: [] });
+  assert.equal(dom.mock.store.revision, 4);
+  const backupKeys = Object.keys(dom.mock.store).filter(key => key.startsWith('policyRecoveryBackup-'));
+  assert.equal(backupKeys.length, 1);
+  assert.deepEqual(dom.mock.store[backupKeys[0]!], { policy: original, revision: 3 });
+  assert.equal(dom.window.document.getElementById('recovery-panel')!.hidden, true);
+  assert.match(dom.window.document.getElementById('status')!.textContent, /Список пуст/);
+});
+test('recovery never overwrites a valid policy or resets on failed backup write', async () => {
+  const valid = { schemaVersion: 2, rules: [] };
+  const dom = await setup(undefined, { policy: { schemaVersion: 99, rules: [] }, revision: 1 });
+  (dom.window.document.getElementById('recovery-consent') as HTMLInputElement).checked = true;
+  dom.mock.store.policy = valid;
+  dom.click('recovery-reset'); await settle();
+  assert.deepEqual(dom.mock.store.policy, valid);
+  assert.equal(dom.mock.store.revision, 1);
+  assert.equal(Object.keys(dom.mock.store).filter(key => key.startsWith('policyRecoveryBackup-')).length, 0);
+  const failed = await setup(undefined, { policy: { schemaVersion: 99, rules: [] }, revision: 1 });
+  failed.mock.fail('storage');
+  (failed.window.document.getElementById('recovery-consent') as HTMLInputElement).checked = true;
+  failed.click('recovery-reset'); await settle();
+  assert.equal((failed.mock.store.policy as { schemaVersion: number }).schemaVersion, 99);
 });
