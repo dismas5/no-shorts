@@ -1,5 +1,6 @@
 import { allOrigins, exportConfig, matchUrl, normalizeRule, normalizeConfig, originsFor, parseHttpUrl, parseImport, ruleLabel, type Config, type Rule } from '../core/policy.ts';
 import { request } from '../runtime/contracts.ts';
+import { migrateConfig } from '../core/policy.ts';
 import type { BackgroundDiagnostics, Snapshot } from '../runtime/contracts.ts';
 import { el, errorText, text } from './dom.ts';
 let snapshot: Snapshot | undefined;
@@ -14,6 +15,11 @@ const subdomains = el<HTMLInputElement>('subdomains');
 const kind = el<HTMLSelectElement>('kind');
 const path = el<HTMLInputElement>('path');
 const announce = (message: string) => { el('notice').textContent = message; };
+try {
+  el('app-version').textContent = `Версия ${browser.runtime.getManifest().version}`;
+} catch {
+  el('app-version').textContent = 'Версия недоступна';
+}
 function button(label: string, action: () => void): HTMLButtonElement {
   const node = document.createElement('button');
   node.type = 'button'; node.textContent = label; node.addEventListener('click', action);
@@ -69,10 +75,12 @@ async function refreshProtection(): Promise<void> {
     background = await request<BackgroundDiagnostics>({ type: 'diagnostics' });
     startupDiagnostics('Фон ответил. Ожидание состояния защиты.', background);
     snapshot = await request<Snapshot>({ type: 'reconcile' });
+    el('recovery-panel').hidden = true;
     render();
     startupDiagnostics('Начальное состояние получено.', background);
   } catch (error) {
     el('status').textContent = 'Не удалось загрузить состояние защиты.';
+    el('recovery-panel').hidden = !errorText(error).includes('Сохранённые правила имеют неподдерживаемый или повреждённый формат');
     startupDiagnostics(`Загрузка остановлена: ${errorText(error)}`, background);
     // Diagnostics bypass the controller queue, including a hung browser API.
     if (background) {
@@ -149,6 +157,40 @@ async function remove(id: string): Promise<void> {
     if (editing === id) resetEditor(); announce('Правило удалено. Ненужные разрешения освобождены, если это не затрагивает другие правила.');
   });
 }
+
+el('recovery-reset').addEventListener('click', () => { void perform(async () => {
+  const error = el('recovery-error');
+  error.textContent = '';
+  if (!el<HTMLInputElement>('recovery-consent').checked) {
+    error.textContent = 'Сначала подтвердите замену списка пустым.';
+    return;
+  }
+  // This path must work without a loaded snapshot or a functioning controller.
+  // Keep the original policy and revision in a separately named storage entry
+  // before changing anything. Never silently reset an unknown policy.
+  const storage = browser.storage.local;
+  const before = await storage.get(['policy', 'revision']);
+  if (before.policy === undefined) throw new Error('Сохранённая конфигурация отсутствует. Нажмите «Перепроверить защиту».');
+  try {
+    migrateConfig(before.policy);
+    throw new Error('Сохранённая конфигурация уже корректна. Нажмите «Перепроверить защиту».');
+  } catch (cause) {
+    if (!(cause instanceof Error) || cause.message === 'Сохранённая конфигурация уже корректна. Нажмите «Перепроверить защиту».') throw cause;
+  }
+  const backupKey = `policyRecoveryBackup-${crypto.randomUUID()}`;
+  await storage.set({ [backupKey]: { policy: before.policy, revision: before.revision } });
+  const backup = (await storage.get(backupKey))[backupKey] as { policy: unknown; revision: unknown } | undefined;
+  if (!backup || JSON.stringify(backup.policy) !== JSON.stringify(before.policy) ||
+      JSON.stringify(backup.revision) !== JSON.stringify(before.revision)) {
+    throw new Error('Резервную копию не удалось подтвердить. Список не изменён.');
+  }
+  const revision = Number.isSafeInteger(before.revision) && (before.revision as number) >= 0 &&
+    (before.revision as number) < Number.MAX_SAFE_INTEGER ? (before.revision as number) + 1 : 1;
+  await storage.set({ policy: { schemaVersion: 2, rules: [] }, revision });
+  el<HTMLInputElement>('recovery-consent').checked = false;
+  await refreshProtection();
+  announce('Пустой список восстановлен. Предыдущая конфигурация сохранена в резервной копии хранилища.');
+}, 'recovery-error'); });
 el('refresh').addEventListener('click', () => { void perform(async () => {
   await refreshProtection(); announce('Состояние обновлено.');
 }); });
@@ -165,10 +207,21 @@ el('test-form').addEventListener('submit', event => {
 el('export').addEventListener('click', () => {
   if (!snapshot) return;
   imported = undefined; const content = exportConfig(snapshot.config);
-  showJson(content, 'Экспорт текущего списка. Можно сохранить файл или скопировать JSON.');
+  // Safari cannot navigate to blob:safari-web-extension URLs (WebKitBlobResource:1).
+  // Keep the JSON visible for copying instead of opening a broken tab.
+  const isSafariExtension = browser.runtime.getURL('').startsWith('safari-web-extension:');
+  showJson(content, isSafariExtension
+    ? 'В Safari выделите и скопируйте JSON, затем сохраните как local-blocklist.json в текстовом редакторе.'
+    : 'Экспорт текущего списка. Можно сохранить файл или скопировать JSON.');
+  if (isSafariExtension) return;
   const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'local-blocklist.json';
   document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+});
+el('json-select').addEventListener('click', () => {
+  const preview = el<HTMLTextAreaElement>('json-preview');
+  preview.focus(); preview.select();
+  announce('JSON выделен. Скопируйте его сочетанием ⌘C (macOS) или Ctrl+C.');
 });
 function showJson(content: string, summary: string): void {
   el('json-panel').hidden = false; el<HTMLTextAreaElement>('json-preview').value = content;

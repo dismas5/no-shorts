@@ -242,3 +242,43 @@ test('registered scripts block an SPA route after page reload and after a new ba
     store = structuredClone(background.mock.store);
   }
 });
+
+test('storage failures return actionable sanitized errors without clearing saved rules', async () => {
+  const sender = { id: 'local-blocklist', url: optionsUrl };
+  const rejectedRead = await setup(false, undefined, mock => {
+    mock.api.storage.local.get = async () => { throw new Error('private sensitive browser detail'); };
+  });
+  const read = await rejectedRead.send({ type: 'reconcile' }, sender);
+  assert.match((read.replies[0] as { error: string }).error, /storage\.local\.get/);
+  assert.doesNotMatch((read.replies[0] as { error: string }).error, /private sensitive/);
+
+  const invalid = await setup(false, { policy: { schemaVersion: 99, rules: [] }, revision: 7 });
+  const validated = await invalid.send({ type: 'reconcile' }, sender);
+  assert.match((validated.replies[0] as { error: string }).error, /повреждённый формат/);
+  assert.equal((invalid.mock.store.policy as { schemaVersion: number }).schemaVersion, 99);
+
+  const rejectedWrite = await setup(false, undefined, mock => { mock.fail('storage'); });
+  const write = await rejectedWrite.send({ type: 'reconcile' }, sender);
+  assert.match((write.replies[0] as { error: string }).error, /storage\.local\.set/);
+});
+
+test('unambiguously empty legacy storage is recovered without losing revision', async () => {
+  const sender = { id: 'local-blocklist', url: optionsUrl };
+  for (const policy of [null, {}, { rules: [] }]) {
+    const background = await setup(false, { policy, revision: 12 });
+    const loaded = await background.send({ type: 'reconcile' }, sender);
+    assert.equal((loaded.replies[0] as { ok: boolean }).ok, true);
+    assert.deepEqual(background.mock.store.policy, { schemaVersion: 2, rules: [] });
+    assert.equal(background.mock.store.revision, 12);
+  }
+});
+test('ambiguous or nonempty malformed storage is never silently overwritten', async () => {
+  const sender = { id: 'local-blocklist', url: optionsUrl };
+  for (const policy of [{ rules: [{ domain: 'example.com' }] }, { unexpected: true }, [], '']) {
+    const background = await setup(false, { policy, revision: 3 });
+    const loaded = await background.send({ type: 'reconcile' }, sender);
+    assert.equal((loaded.replies[0] as { ok: boolean }).ok, false);
+    assert.deepEqual(background.mock.store.policy, policy);
+    assert.equal(background.mock.store.revision, 3);
+  }
+});

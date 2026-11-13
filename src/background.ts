@@ -1,8 +1,10 @@
 import { Controller } from './runtime/controller.ts';
+import { StorageStateError } from './runtime/storage.ts';
 import { requestPortName, type BackgroundDiagnostics } from './runtime/contracts.ts';
 const controller = new Controller(browser);
 const reply = <T>(task: () => Promise<T>) => controller.run(task).then(value => ({ ok: true, value }),
-  () => ({ ok: false, error: 'Операция не завершена. Проверьте конфигурацию, разрешения и перезапустите расширение.' }));
+  error => ({ ok: false, error: error instanceof StorageStateError ? error.message :
+    'Операция не завершена. Проверьте конфигурацию, разрешения и перезапустите расширение.' }));
 const optionsUrl = browser.runtime.getURL('options.html');
 function handleMessage(message: unknown, sender: browser.runtime.MessageSender) {
   if (!message || typeof message !== 'object' || !('type' in message)) return undefined;

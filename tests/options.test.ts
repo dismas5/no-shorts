@@ -6,18 +6,23 @@ import { mockBrowser } from './mock-browser.ts';
 import { harness, settle, source } from './dom-harness.ts';
 import { connectTo } from './mock-port.ts';
 const code = await source('src/ui/options.ts');
-async function setup(startup?: 'reject' | 'pending' | 'no-listener') {
+async function setup(startup?: 'reject' | 'pending' | 'no-listener', storedState?: Record<string, unknown>) {
   const dom = harness(await readFile('public/options.html', 'utf8'));
-  const mock = mockBrowser(); const controller = new Controller(mock.api);
+  const mock = mockBrowser();
+  if (storedState) Object.assign(mock.store, structuredClone(storedState));
+  const controller = new Controller(mock.api);
+  let safari = false;
   let grant = false; const requested: string[][] = [];
   dom.context.browser = {
+    storage: mock.api.storage,
     permissions: { request: async ({ origins }: { origins: string[] }) => { requested.push(origins); if (grant) {
       const { config } = await controller.snapshot();
       // The UI requests exactly the form's origins; the test records the request before saving.
       mock.api.permissions.contains = async ({ origins: values }) => values?.every(origin => requested.flat().includes(origin)) ?? false;
       mock.grant(config.rules);
     } return grant; } },
-    runtime: { connect: connectTo(async (message: Record<string, unknown>) => {
+    runtime: { getURL: () => safari ? 'safari-web-extension://test/' : 'moz-extension://test/',
+      connect: connectTo(async (message: Record<string, unknown>) => {
       if (startup === 'no-listener') { startup = undefined; return undefined; }
       if (message.type === 'diagnostics') return { ok: true, value: {
         version: '1.0.2', senderId: 'same', optionsUrlMatches: true, senderUrlSource: 'url', stage: 'ready'
@@ -38,7 +43,7 @@ async function setup(startup?: 'reject' | 'pending' | 'no-listener') {
   const input = (id: string, value: string) => { (dom.window.document.getElementById(id) as HTMLInputElement).value = value; };
   const click = (id: string) => dom.fire(dom.window.document.getElementById(id)!, 'click');
   const submit = () => dom.fire(dom.window.document.getElementById('rule-form')!, 'submit');
-  return { ...dom, mock, controller, input, click, submit, requested, allow: () => { grant = true; } };
+  return { ...dom, mock, controller, input, click, submit, requested, allow: () => { grant = true; }, useSafari: () => { safari = true; } };
 }
 test('failed initialization explains why saving is unavailable and allows a retry', async () => {
   const dom = await setup('reject');
@@ -80,6 +85,7 @@ test('missing background handshake reports a startup failure and can be retried'
 });
 test('settings start empty, validate, add with denied access, edit same ID, grant and delete', async () => {
   const dom = await setup();
+  assert.ok(dom.window.document.getElementById('app-version')!.textContent.includes('Версия недоступна'));
   assert.ok(dom.window.document.getElementById('rule-list')!.textContent.includes('Пока здесь свободно'));
   dom.input('domain', 'https://wrong.test'); dom.submit(); await settle();
   assert.equal((await dom.controller.snapshot()).config.rules.length, 0);
@@ -115,4 +121,50 @@ test('JSON import is previewed before replacement; invalid import leaves list un
   assert.deepEqual(exported, (await dom.controller.snapshot()).config);
   dom.input('test-url', 'https://focus.test/page/'); dom.fire(dom.window.document.getElementById('test-form')!, 'submit');
   assert.ok(dom.window.document.getElementById('test-result')!.textContent.includes('не подтверждена'));
+});
+
+test('Safari JSON export previews content without creating a blob URL', async () => {
+  const dom = await setup();
+  dom.useSafari();
+  dom.context.URL = class extends URL {
+    static createObjectURL(): string { throw new Error('Safari must not create a blob URL'); }
+  };
+  dom.click('export');
+  assert.equal(dom.window.document.getElementById('json-panel')!.hidden, false);
+  assert.deepEqual(JSON.parse((dom.window.document.getElementById('json-preview') as HTMLTextAreaElement).value),
+    (await dom.controller.snapshot()).config);
+  assert.match(dom.window.document.getElementById('import-summary')!.textContent, /Safari/);
+});
+
+test('explicit recovery backs up malformed policy before resetting and restores settings', async () => {
+  const original = { schemaVersion: 99, rules: [{ id: 'unknown-format' }] };
+  const dom = await setup(undefined, { policy: original, revision: 3 });
+  assert.equal(dom.window.document.getElementById('recovery-panel')!.hidden, false);
+  dom.click('recovery-reset'); await settle();
+  assert.deepEqual(dom.mock.store.policy, original, 'without consent do not change policy');
+  assert.match(dom.window.document.getElementById('recovery-error')!.textContent, /подтвердите/);
+  (dom.window.document.getElementById('recovery-consent') as HTMLInputElement).checked = true;
+  dom.click('recovery-reset'); await settle();
+  assert.deepEqual(dom.mock.store.policy, { schemaVersion: 2, rules: [] });
+  assert.equal(dom.mock.store.revision, 4);
+  const backupKeys = Object.keys(dom.mock.store).filter(key => key.startsWith('policyRecoveryBackup-'));
+  assert.equal(backupKeys.length, 1);
+  assert.deepEqual(dom.mock.store[backupKeys[0]!], { policy: original, revision: 3 });
+  assert.equal(dom.window.document.getElementById('recovery-panel')!.hidden, true);
+  assert.match(dom.window.document.getElementById('status')!.textContent, /Список пуст/);
+});
+test('recovery never overwrites a valid policy or resets on failed backup write', async () => {
+  const valid = { schemaVersion: 2, rules: [] };
+  const dom = await setup(undefined, { policy: { schemaVersion: 99, rules: [] }, revision: 1 });
+  (dom.window.document.getElementById('recovery-consent') as HTMLInputElement).checked = true;
+  dom.mock.store.policy = valid;
+  dom.click('recovery-reset'); await settle();
+  assert.deepEqual(dom.mock.store.policy, valid);
+  assert.equal(dom.mock.store.revision, 1);
+  assert.equal(Object.keys(dom.mock.store).filter(key => key.startsWith('policyRecoveryBackup-')).length, 0);
+  const failed = await setup(undefined, { policy: { schemaVersion: 99, rules: [] }, revision: 1 });
+  failed.mock.fail('storage');
+  (failed.window.document.getElementById('recovery-consent') as HTMLInputElement).checked = true;
+  failed.click('recovery-reset'); await settle();
+  assert.equal((failed.mock.store.policy as { schemaVersion: number }).schemaVersion, 99);
 });
